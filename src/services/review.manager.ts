@@ -175,7 +175,7 @@ ${annotatedDiff}
                 if (!feedback || feedback.trim() === '') {
                     console.log(`[${mrIid}] Copilot 回覆為空，跳過 ${file}`);
                 } else {
-                    const modelLine = modelUsage ? `\n_模型資訊：\`${modelUsage}\`_` : `\n_CLI 版本：\`${copilotVersion}\`_`;
+                    const modelLine = modelUsage ? `\n_模型資訊：_\n\`\`\`\n${modelUsage}\n\`\`\`` : `\n_CLI 版本：\`${copilotVersion}\`_`;
                     console.log(`[${mrIid}] 正在發佈 Review 留言到 GitLab (${file})...`);
                     await postToGitLab(projectId, mrIid, file,
                         `${feedback.trim()}\n\n---${modelLine}`

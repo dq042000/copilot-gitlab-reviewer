@@ -1,10 +1,47 @@
-import { mkdtempSync, rmSync } from 'fs';
-import { join } from 'path';
-import { tmpdir } from 'os';
-import { execSync, spawnSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import axios from 'axios';
 
 const EXCLUDE_PATTERNS = ['dist/', 'node_modules/', '*.lock', 'vendor/', '.git/'];
+const GITLAB_API_BASE = () => process.env.GITLAB_URL || 'https://gitlab.cloudschool.com.tw';
+const GITLAB_TOKEN = () => process.env.GITLAB_PRIVATE_TOKEN;
+
+/**
+ * 透過 GitLab API 取得 MR 真正變更的檔案 diff 清單。
+ * 相較於 git diff，API 回傳的是 GitLab 計算後的 MR diff，不受淺層 clone 影響。
+ */
+async function getMrDiffs(projectId: number, mrIid: number): Promise<{ path: string; diff: string }[]> {
+    const results: { path: string; diff: string }[] = [];
+    let page = 1;
+
+    while (true) {
+        const res = await axios.get(
+            `${GITLAB_API_BASE()}/api/v4/projects/${projectId}/merge_requests/${mrIid}/diffs`,
+            {
+                headers: { 'PRIVATE-TOKEN': GITLAB_TOKEN() },
+                params: { per_page: 50, page },
+                timeout: 30000
+            }
+        );
+
+        const diffs: any[] = res.data;
+        if (!diffs || diffs.length === 0) break;
+
+        for (const d of diffs) {
+            const filePath: string = d.new_path || d.old_path;
+            // 跳過排除清單、已刪除且無內容的檔案
+            if (EXCLUDE_PATTERNS.some(p => filePath.includes(p))) continue;
+            if (!d.diff || d.diff.trim() === '') continue;
+            results.push({ path: filePath, diff: d.diff });
+        }
+
+        // 檢查是否還有下一頁
+        const total = parseInt(res.headers['x-total-pages'] ?? '1', 10);
+        if (page >= total) break;
+        page++;
+    }
+
+    return results;
+}
 
 /**
  * 解析 git diff，在每一行前標注實際的新檔案行號，讓 Copilot 能精確引用。
@@ -41,59 +78,35 @@ function annotateDiffWithLineNumbers(diff: string): string {
 }
 
 export const handleUniversalReview = async (payload: any) => {
-    const tempDir = mkdtempSync(join(tmpdir(), 'copilot-review-'));
-    
     const { project, object_attributes } = payload;
-    const repoUrl = project.git_ssh_url;
-    const sourceBranch = object_attributes.source_branch;
-    const targetBranch = object_attributes.target_branch;
     const projectId = project.id;
     const mrIid = object_attributes.iid;
 
     try {
-        console.log(`[${mrIid}] 正在 Clone 來源分支: ${sourceBranch}...`);
-        // 1. 克隆來源分支 (Shallow)
-        execSync(`git clone --depth 1 --branch ${sourceBranch} ${repoUrl} ${tempDir}`, {
-            env: { ...process.env, GIT_SSH_COMMAND: 'ssh -o StrictHostKeyChecking=no' },
-            stdio: 'ignore'
-        });
+        // 1. 透過 GitLab API 取得本次 MR 的真實變更 diff（不受淺層 clone 影響）
+        console.log(`[${mrIid}] 正在透過 GitLab API 取得 MR diff...`);
+        const mrDiffs = await getMrDiffs(projectId, mrIid);
 
-        // 💡 關鍵修正：Fetch 目標分支時使用明確 refspec，確保 FETCH_HEAD 指向目標分支
-        // 淺層 Clone (--depth 1) 沒有足夠的歷史記錄找到 merge base，
-        // 因此不使用三點語法 (origin/x...HEAD)，改用 FETCH_HEAD 兩點 diff
-        console.log(`[${mrIid}] 正在獲取目標分支基準: ${targetBranch}...`);
-        execSync(
-            `git -C ${tempDir} fetch --depth 1 origin +refs/heads/${targetBranch}:refs/remotes/origin/${targetBranch}`,
-            {
-                env: { ...process.env, GIT_SSH_COMMAND: 'ssh -o StrictHostKeyChecking=no' },
-                stdio: 'ignore'
-            }
+        const filesToReview = mrDiffs.filter(
+            ({ path }) => !EXCLUDE_PATTERNS.some(p => path.includes(p))
         );
-
-        // 2. 獲取檔案列表（FETCH_HEAD 即剛 fetch 回來的目標分支最新 commit）
-        const diffCmd = `git -C ${tempDir} diff --name-only FETCH_HEAD HEAD`;
-        const changedFilesRaw = execSync(diffCmd, { encoding: 'utf8' });
-
-        const filesToReview = changedFilesRaw
-            .split('\n')
-            .filter(file => file.trim() !== '' && !EXCLUDE_PATTERNS.some(p => file.includes(p)));
 
         console.log(`[${mrIid}] 待審查檔案數: ${filesToReview.length}`);
 
         // 解析 copilot CLI 路徑與版本（移到迴圈外，只查找一次）
         const homeDir = process.env.HOME || `/home/${process.env.USER}`;
-        const copilotBin = execSync(
-            `find "${homeDir}/.nvm/versions" -name "copilot" -type f 2>/dev/null | head -1 || which copilot 2>/dev/null || true`,
-            { encoding: 'utf8', shell: '/bin/bash' }
-        ).trim();
+        const copilotBin = spawnSync(
+            '/bin/bash',
+            ['-c', `find "${homeDir}/.nvm/versions" -name "copilot" -type f 2>/dev/null | head -1 || which copilot 2>/dev/null || true`],
+            { encoding: 'utf8' }
+        ).stdout.trim();
 
         if (!copilotBin) {
             throw new Error('找不到 copilot CLI，請確認已安裝 @github/copilot 並可在 PATH 中存取');
         }
 
-        const copilotVersion = execSync(`"${copilotBin}" --version 2>/dev/null || echo 'unknown'`, {
-            encoding: 'utf8', shell: '/bin/bash'
-        }).trim();
+        const copilotVersion = spawnSync(copilotBin, ['--version'], { encoding: 'utf8' })
+            .stdout.trim() || 'unknown';
 
         console.log(`[${mrIid}] 使用 Copilot CLI 版本: ${copilotVersion}`);
 
@@ -106,13 +119,8 @@ export const handleUniversalReview = async (payload: any) => {
             `---\n_模型：GitHub Copilot｜CLI 版本：\`${copilotVersion}\`_`
         );
 
-        for (const file of filesToReview) {
+        for (const { path: file, diff: fileDiff } of filesToReview) {
             try {
-                const fileDiff = execSync(
-                    `git -C ${tempDir} diff FETCH_HEAD HEAD -- "${file}"`,
-                    { encoding: 'utf8' }
-                );
-
                 if (!fileDiff || fileDiff.trim() === '') continue;
 
                 const annotatedDiff = annotateDiffWithLineNumbers(fileDiff);
@@ -192,9 +200,6 @@ ${annotatedDiff}
             );
         } catch (_) { /* 避免通知失敗再次拋出 */ }
         throw err;
-    } finally {
-        rmSync(tempDir, { recursive: true, force: true });
-        console.log(`[${mrIid}] 臨時目錄已清理`);
     }
 };
 

@@ -46,12 +46,30 @@ export const handleUniversalReview = async (payload: any) => {
 
         console.log(`[${mrIid}] 待審查檔案數: ${filesToReview.length}`);
 
+        // 解析 copilot CLI 路徑與版本（移到迴圈外，只查找一次）
+        const homeDir = process.env.HOME || `/home/${process.env.USER}`;
+        const copilotBin = execSync(
+            `find "${homeDir}/.nvm/versions" -name "copilot" -type f 2>/dev/null | head -1 || which copilot 2>/dev/null || true`,
+            { encoding: 'utf8', shell: '/bin/bash' }
+        ).trim();
+
+        if (!copilotBin) {
+            throw new Error('找不到 copilot CLI，請確認已安裝 @github/copilot 並可在 PATH 中存取');
+        }
+
+        const copilotVersion = execSync(`"${copilotBin}" --version 2>/dev/null || echo 'unknown'`, {
+            encoding: 'utf8', shell: '/bin/bash'
+        }).trim();
+
+        console.log(`[${mrIid}] 使用 Copilot CLI 版本: ${copilotVersion}`);
+
         // 發出「審查開始」通知留言
         await postToGitLab(
             projectId, mrIid, '',
             `🤖 **AI Code Review 已啟動**\n\n` +
             `> 正在分析本次 MR 的 **${filesToReview.length}** 個變更檔案，請稍候...\n\n` +
-            `審查完成後將逐一回報各檔案的分析結果。`
+            `審查完成後將逐一回報各檔案的分析結果。\n\n` +
+            `---\n_模型：GitHub Copilot｜CLI 版本：\`${copilotVersion}\`_`
         );
 
         for (const file of filesToReview) {
@@ -62,18 +80,6 @@ export const handleUniversalReview = async (payload: any) => {
                 );
 
                 if (!fileDiff || fileDiff.trim() === '') continue;
-
-                // 3. 呼叫 @github/copilot CLI
-                // nvm 安裝的 binary 在服務環境中不在 PATH，動態解析絕對路徑
-                const homeDir = process.env.HOME || `/home/${process.env.USER}`;
-                const copilotBin = execSync(
-                    `find "${homeDir}/.nvm/versions" -name "copilot" -type f 2>/dev/null | head -1 || which copilot 2>/dev/null || true`,
-                    { encoding: 'utf8', shell: '/bin/bash' }
-                ).trim();
-
-                if (!copilotBin) {
-                    throw new Error('找不到 copilot CLI，請確認已安裝 @github/copilot 並可在 PATH 中存取');
-                }
 
                 const prompt = `你是一位資深工程師。請審查以下代碼變動，針對潛在 Bug 或安全風險給予簡短建議。若無問題請回覆 "Looks good"。\n\n${fileDiff}`;
 
@@ -89,7 +95,9 @@ export const handleUniversalReview = async (payload: any) => {
                     console.log(`[${mrIid}] Copilot 回覆為空，跳過 ${file}`);
                 } else {
                     console.log(`[${mrIid}] 正在發佈 Review 留言到 GitLab (${file})...`);
-                    await postToGitLab(projectId, mrIid, file, feedback);
+                    await postToGitLab(projectId, mrIid, file,
+                        `${feedback.trim()}\n\n---\n_模型：GitHub Copilot｜CLI 版本：\`${copilotVersion}\`_`
+                    );
                 }
             } catch (e: any) {
                 console.error(`[${mrIid}] 檔案 ${file} 審查中斷:`, e);

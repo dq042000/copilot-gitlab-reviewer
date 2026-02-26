@@ -7,10 +7,10 @@
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "review:bg": "pm2 start dist/index.js --name copilot-bot",
-    "review:stop": "pm2 stop copilot-bot",
-    "review:restart": "pm2 restart copilot-bot",
-    "review:logs": "pm2 logs copilot-bot"
+    "start:bg": "pm2 start dist/index.js --name copilot-bot",
+    "start:stop": "pm2 stop copilot-bot",
+    "start:restart": "pm2 restart copilot-bot",
+    "start:logs": "pm2 logs copilot-bot"
   },
   "keywords": [],
   "author": "",

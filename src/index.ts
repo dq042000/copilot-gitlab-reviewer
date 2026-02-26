@@ -61,11 +61,24 @@ app.post('/webhook', (req, res) => {
     const payload = req.body;
 
     // 2. 處理 MR 留言觸發（note 事件：在 MR 留言 /ai-review）
-    if (payload.object_kind === 'note' && payload.merge_request) {
+    if (payload.object_kind === 'note') {
         const noteBody: string = payload.object_attributes?.note ?? '';
-        if (noteBody.trim().toLowerCase() === '/ai-review') {
+        const noteableType: string = payload.object_attributes?.noteable_type ?? '';
+
+        // Debug：印出完整 note payload 關鍵欄位，方便排查
+        console.log(`[Note DEBUG] object_kind=${payload.object_kind}`);
+        console.log(`[Note DEBUG] noteable_type=${noteableType}`);
+        console.log(`[Note DEBUG] note="${noteBody.trim()}"`);
+        console.log(`[Note DEBUG] has merge_request=${!!payload.merge_request}`);
+        console.log(`[Note DEBUG] merge_request.iid=${payload.merge_request?.iid}`);
+        console.log(`[Note DEBUG] object_attributes.noteable_id=${payload.object_attributes?.noteable_id}`);
+
+        const isMrNote = noteableType === 'MergeRequest' || !!payload.merge_request;
+
+        if (isMrNote && noteBody.trim().toLowerCase() === '/ai-review') {
+            // noteable_id 是 MR 的 internal id（iid），優先從 merge_request.iid 取得
             const projectId = payload.project?.id;
-            const mrIid     = payload.merge_request?.iid;
+            const mrIid     = payload.merge_request?.iid ?? payload.object_attributes?.noteable_iid;
             console.log(`[留言觸發] /ai-review 指令，project=${projectId}, mr=${mrIid}`);
             res.status(202).send('Review triggered by comment');
 
@@ -78,6 +91,7 @@ app.post('/webhook', (req, res) => {
                 .catch((err: unknown) => console.error(`[留言觸發] MR !${mrIid} 審查異常:`, err));
             return;
         }
+        console.log(`[Note] 非 /ai-review 指令或非 MR 留言，略過。`);
         return res.status(200).send('Note ignored.');
     }
 

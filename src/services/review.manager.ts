@@ -224,18 +224,25 @@ async function postToGitLab(projectId: number, mrIid: number, filename: string, 
                     timeout: 30000  // 30 秒逾時
                 }
             );
+            if (attempt > 1) {
+                console.log(`GitLab API 發佈成功（第 ${attempt} 次重試後）[project=${projectId}, mr=${mrIid}, file=${filename}]`);
+            }
             return; // 成功即離開
         } catch (error: any) {
             const isLastAttempt = attempt === retries;
+            const waitSec = Math.pow(2, attempt - 1);
             console.error(`GitLab API 撥叫失敗 (第 ${attempt}/${retries} 次) [project=${projectId}, mr=${mrIid}, file=${filename}]:`);
-            console.error('Status:', error?.response?.status);
+            console.error('Status:', error?.response?.status ?? 'N/A (網路層錯誤)');
+            console.error('Code:  ', error?.code ?? 'N/A');
             console.error('Message:', error?.message);
             if (isLastAttempt) {
                 console.error('Data:', JSON.stringify(error?.response?.data));
+                console.error(`GitLab API 已達最大重試次數 (${retries})，放棄發佈 [project=${projectId}, mr=${mrIid}, file=${filename}]`);
                 return;
             }
+            console.warn(`將在 ${waitSec} 秒後進行第 ${attempt + 1}/${retries} 次重試... [project=${projectId}, mr=${mrIid}, file=${filename}]`);
             // 等待後重試（指數退避：1s, 2s, 4s）
-            await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt - 1)));
+            await new Promise(r => setTimeout(r, waitSec * 1000));
         }
     }
 }

@@ -1,10 +1,44 @@
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import axios from 'axios';
 
 const EXCLUDE_PATTERNS = ['dist/', 'node_modules/', '*.lock', 'vendor/', '.git/'];
+
+/**
+ * 解析 git diff，在每一行前標注實際的新檔案行號，讓 Copilot 能精確引用。
+ * 輸出格式範例：
+ *   [L42 +] $result = $this->find();
+ *   [L43  ] $data = [];
+ */
+function annotateDiffWithLineNumbers(diff: string): string {
+    const lines = diff.split('\n');
+    const annotated: string[] = [];
+    let newLineNum = 0;
+
+    for (const line of lines) {
+        // 解析 hunk header: @@ -old,count +new,count @@
+        const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+        if (hunkMatch) {
+            newLineNum = parseInt(hunkMatch[1] ?? '0', 10) - 1;
+            annotated.push(line);
+            continue;
+        }
+        if (line.startsWith('+') && !line.startsWith('+++')) {
+            newLineNum++;
+            annotated.push(`[L${newLineNum} +] ${line.slice(1)}`);
+        } else if (line.startsWith('-') && !line.startsWith('---')) {
+            annotated.push(`[DEL  -] ${line.slice(1)}`);
+        } else if (line.startsWith(' ')) {
+            newLineNum++;
+            annotated.push(`[L${newLineNum}  ] ${line.slice(1)}`);
+        } else {
+            annotated.push(line);
+        }
+    }
+    return annotated.join('\n');
+}
 
 export const handleUniversalReview = async (payload: any) => {
     const tempDir = mkdtempSync(join(tmpdir(), 'copilot-review-'));
@@ -81,22 +115,64 @@ export const handleUniversalReview = async (payload: any) => {
 
                 if (!fileDiff || fileDiff.trim() === '') continue;
 
-                const prompt = `你是一位資深工程師。請審查以下代碼變動，針對潛在 Bug 或安全風險給予簡短建議。若無問題請回覆 "Looks good"。\n\n${fileDiff}`;
+                const annotatedDiff = annotateDiffWithLineNumbers(fileDiff);
 
-                // 使用 --prompt 旗標進行非互動式呼叫
-                const feedback = execSync(
-                    `"${copilotBin}" --prompt ${JSON.stringify(prompt)}`,
-                    { encoding: 'utf8', shell: '/bin/bash' }
-                );
+                const prompt = `你是一位資深工程師，請對以下 git diff 進行 Code Review。
+
+diff 中每行前綴說明：
+- [L42 +] 表示新增的第 42 行
+- [DEL  -] 表示被刪除的行
+- [L42  ] 表示未變更的上下文行
+
+請用以下 Markdown 格式回覆（若無問題，最後僅輸出「✅ 無發現明顯問題」即可）：
+
+---
+### 🔴 問題 N：簡短標題
+
+**行號**：第 X 行
+**問題程式碼**：
+\`\`\`
+貼上有問題的那行或數行程式碼
+\`\`\`
+**說明**：說明為何有問題
+**建議修正**：
+\`\`\`
+修正後的程式碼範例
+\`\`\`
+---
+
+每個問題獨立一個區塊，嚴重依序排列（🔴 嚴重 > 🟡 一般 > 🔵 建議）。
+若無問題，請直接回覆：✅ 無發現明顯問題
+
+以下是帶行號標注的 diff：
+\`\`\`
+${annotatedDiff}
+\`\`\`
+`;
+
+                // 使用 spawnSync 分別捕捉 stdout（AI 回覆）與 stderr（模型資訊）
+                const result = spawnSync(copilotBin, ['--prompt', prompt], {
+                    encoding: 'utf8',
+                    shell: false,
+                    maxBuffer: 10 * 1024 * 1024
+                });
+
+                if (result.error) throw result.error;
+
+                const feedback = result.stdout ?? '';
+                // stderr 內含模型用量，例如：gpt-5-mini  14.0k in, 729 out, 0 cached (Est. 0 Premium requests)
+                const modelUsage = (result.stderr ?? '').trim();
 
                 console.log(`[${mrIid}] Copilot 回覆 (${file}):`, feedback.trim().substring(0, 200));
+                if (modelUsage) console.log(`[${mrIid}] 模型資訊:`, modelUsage);
 
                 if (!feedback || feedback.trim() === '') {
                     console.log(`[${mrIid}] Copilot 回覆為空，跳過 ${file}`);
                 } else {
+                    const modelLine = modelUsage ? `\n_模型資訊：\`${modelUsage}\`_` : `\n_CLI 版本：\`${copilotVersion}\`_`;
                     console.log(`[${mrIid}] 正在發佈 Review 留言到 GitLab (${file})...`);
                     await postToGitLab(projectId, mrIid, file,
-                        `${feedback.trim()}\n\n---\n_模型：GitHub Copilot｜CLI 版本：\`${copilotVersion}\`_`
+                        `${feedback.trim()}\n\n---${modelLine}`
                     );
                 }
             } catch (e: any) {

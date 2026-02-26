@@ -198,21 +198,41 @@ ${annotatedDiff}
     }
 };
 
-async function postToGitLab(projectId: number, mrIid: number, filename: string, content: string) {
+async function postToGitLab(projectId: number, mrIid: number, filename: string, content: string, retries = 3) {
     const GITLAB_API = process.env.GITLAB_URL || 'https://gitlab.cloudschool.com.tw';
     const TOKEN = process.env.GITLAB_PRIVATE_TOKEN;
 
-    try {
-        const header = filename ? `#### 🤖 AI Review: \`${filename}\`\n---\n` : '';
-        await axios.post(
-            `${GITLAB_API}/api/v4/projects/${projectId}/merge_requests/${mrIid}/notes`,
-            { body: `${header}${content}` },
-            { headers: { 'PRIVATE-TOKEN': TOKEN } }
-        );
-    } catch (error: any) {
-        console.error(`GitLab API 撥叫失敗 [project=${projectId}, mr=${mrIid}, file=${filename}]:`);
-        console.error('Status:', error?.response?.status);
-        console.error('Data:', JSON.stringify(error?.response?.data));
-        console.error('Message:', error?.message);
+    // GitLab note 限制約 1MB，保守截斷在 30000 字元
+    const MAX_LENGTH = 30000;
+    const truncated = content.length > MAX_LENGTH
+        ? content.slice(0, MAX_LENGTH) + '\n\n> ⚠️ _內容過長已截斷，請查看完整日誌_'
+        : content;
+
+    const header = filename ? `#### 🤖 AI Review: \`${filename}\`\n---\n` : '';
+    const body = `${header}${truncated}`;
+
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            await axios.post(
+                `${GITLAB_API}/api/v4/projects/${projectId}/merge_requests/${mrIid}/notes`,
+                { body },
+                {
+                    headers: { 'PRIVATE-TOKEN': TOKEN },
+                    timeout: 30000  // 30 秒逾時
+                }
+            );
+            return; // 成功即離開
+        } catch (error: any) {
+            const isLastAttempt = attempt === retries;
+            console.error(`GitLab API 撥叫失敗 (第 ${attempt}/${retries} 次) [project=${projectId}, mr=${mrIid}, file=${filename}]:`);
+            console.error('Status:', error?.response?.status);
+            console.error('Message:', error?.message);
+            if (isLastAttempt) {
+                console.error('Data:', JSON.stringify(error?.response?.data));
+                return;
+            }
+            // 等待後重試（指數退避：1s, 2s, 4s）
+            await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt - 1)));
+        }
     }
 }

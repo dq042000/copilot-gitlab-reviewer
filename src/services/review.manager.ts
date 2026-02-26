@@ -15,7 +15,7 @@ async function getMrDiffs(projectId: number, mrIid: number): Promise<{ path: str
 
     while (true) {
         const res = await axios.get(
-            `${GITLAB_API_BASE()}/api/v4/projects/${projectId}/merge_requests/${mrIid}/diffs`,
+            `${GITLAB_API_BASE()}/api/v4/projects/${projectId}/merge_requests/${mrIid}/changes`,
             {
                 headers: { 'PRIVATE-TOKEN': GITLAB_TOKEN() },
                 params: { per_page: 50, page },
@@ -23,21 +23,19 @@ async function getMrDiffs(projectId: number, mrIid: number): Promise<{ path: str
             }
         );
 
-        const diffs: any[] = res.data;
-        if (!diffs || diffs.length === 0) break;
+        // /changes 回傳格式：{ changes: [...], ... }
+        const changes: any[] = res.data?.changes ?? res.data ?? [];
+        if (!changes || changes.length === 0) break;
 
-        for (const d of diffs) {
+        for (const d of changes) {
             const filePath: string = d.new_path || d.old_path;
-            // 跳過排除清單、已刪除且無內容的檔案
             if (EXCLUDE_PATTERNS.some(p => filePath.includes(p))) continue;
             if (!d.diff || d.diff.trim() === '') continue;
             results.push({ path: filePath, diff: d.diff });
         }
 
-        // 檢查是否還有下一頁
-        const total = parseInt(res.headers['x-total-pages'] ?? '1', 10);
-        if (page >= total) break;
-        page++;
+        // /changes 不支援分頁（一次回傳全部），取得後直接跳出
+        break;
     }
 
     return results;

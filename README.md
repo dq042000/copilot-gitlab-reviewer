@@ -107,16 +107,53 @@ pm2 logs copilot-bot
 
 ## GitLab Webhook 設定
 
-1. 進入 GitLab 專案 → **Settings → Webhooks**
-2. 填入 Webhook URL：
+### 步驟一：取得 Webhook URL
 
-   ```
-   https://your-server.example.com/webhook
+確認服務已啟動並可從外部存取，Webhook URL 格式為：
+
+```
+https://your-server.example.com/webhook
+```
+
+### 步驟二：產生 Secret Token
+
+建議使用以下指令產生一組隨機 Token，並填入 `.env` 的 `WEBHOOK_SECRET`：
+
+```bash
+openssl rand -base64 60 | tr -d '\n'
+```
+
+### 步驟三：在 GitLab 新增 Webhook
+
+1. 進入要設定的 GitLab **專案頁面**
+2. 點選左側選單 **Settings（設定）**
+3. 點選 **Webhooks**
+4. 點選右上角 **Add new webhook** 按鈕
+5. 填入以下欄位：
+
+   | 欄位 | 填入值 |
+   |------|--------|
+   | **URL** | `https://your-server.example.com/webhook` |
+   | **Secret token** | `.env` 中的 `WEBHOOK_SECRET` 值 |
+   | **Trigger** | 勾選 ✅ **Merge request events** |
+   | **Enable SSL verification** | 啟用（若為自簽憑證可視情況關閉） |
+
+6. 點選 **Add webhook** 儲存
+
+### 步驟四：測試 Webhook 連線
+
+1. 儲存後，在 Webhook 列表中找到剛新增的項目
+2. 點選右側 **Test** 下拉選單
+3. 選擇 **Merge request events**
+4. GitLab 會送出一筆測試請求，確認服務回傳 `202 Accepted`
+5. 同時查看伺服器日誌確認收到請求：
+
+   ```bash
+   pm2 logs copilot-bot
+   # 應看到：[Webhook] 收到請求，來源 Token 長度: xxx
    ```
 
-3. **Secret token** 填入 `.env` 中的 `WEBHOOK_SECRET`
-4. 勾選觸發事件：**Merge request events**
-5. 儲存後可按 **Test** 按鈕驗證連線
+> **注意**：GitLab Test 按鈕送出的 MR action 為 `undefined`，服務已允許此情況通過，方便測試連線是否正常。
 
 ---
 

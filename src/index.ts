@@ -12,6 +12,40 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
 
+// ── 手動觸發端點：POST /trigger ─────────────────────────────────────────────
+// 用法範例：
+//   curl -X POST 'http://localhost:3000/trigger' \
+//        -H 'Content-Type: application/json' \
+//        -d '{"projectId": 47, "mrIid": 4}'
+app.post('/trigger', async (req, res) => {
+    const adminToken = process.env.ADMIN_TOKEN;
+    const reqToken   = req.headers['x-admin-token'] as string | undefined;
+
+    if (adminToken && reqToken !== adminToken) {
+        return res.status(403).json({ error: 'Invalid ADMIN_TOKEN' });
+    }
+
+    const projectId = Number(req.body?.projectId);
+    const mrIid     = Number(req.body?.mrIid);
+
+    if (!projectId || !mrIid) {
+        return res.status(400).json({ error: 'projectId 與 mrIid 為必填欄位' });
+    }
+
+    console.log(`[手動觸發] project=${projectId}, mr=${mrIid}`);
+    res.status(202).json({ message: `已排入審查：project=${projectId}, mr=${mrIid}` });
+
+    // 組成最小化 payload 直接呼叫 handleUniversalReview
+    const fakePayload = {
+        project: { id: projectId },
+        object_attributes: { iid: mrIid, action: 'manual' }
+    };
+
+    handleUniversalReview(fakePayload)
+        .then(() => console.log(`[手動觸發] MR !${mrIid} 審查完畢`))
+        .catch((err: unknown) => console.error(`[手動觸發] MR !${mrIid} 審查異常:`, err));
+});
+
 app.post('/webhook', (req, res) => {
     // 1. 安全檢查：驗證 GitLab 傳來的 Secret Token
     const gitlabToken = req.headers['x-gitlab-token'];
@@ -26,7 +60,28 @@ app.post('/webhook', (req, res) => {
 
     const payload = req.body;
 
-    // 2. 只處理 Merge Request 事件
+    // 2. 處理 MR 留言觸發（note 事件：在 MR 留言 /ai-review）
+    if (payload.object_kind === 'note' && payload.merge_request) {
+        const noteBody: string = payload.object_attributes?.note ?? '';
+        if (noteBody.trim().toLowerCase() === '/ai-review') {
+            const projectId = payload.project?.id;
+            const mrIid     = payload.merge_request?.iid;
+            console.log(`[留言觸發] /ai-review 指令，project=${projectId}, mr=${mrIid}`);
+            res.status(202).send('Review triggered by comment');
+
+            const fakePayload = {
+                project: { id: projectId },
+                object_attributes: { iid: mrIid, action: 'manual' }
+            };
+            handleUniversalReview(fakePayload)
+                .then(() => console.log(`[留言觸發] MR !${mrIid} 審查完畢`))
+                .catch((err: unknown) => console.error(`[留言觸發] MR !${mrIid} 審查異常:`, err));
+            return;
+        }
+        return res.status(200).send('Note ignored.');
+    }
+
+    // 3. 只處理 Merge Request 事件
     if (payload.object_kind !== 'merge_request') {
         return res.status(200).send('Not a Merge Request event, skipping.');
     }
@@ -72,5 +127,7 @@ app.listen(PORT, () => {
     console.log(`🚀 Copilot GitLab Reviewer 啟動成功`);
     console.log(`📡 監聽埠號: ${PORT}`);
     console.log(`🔗 Webhook 路徑: https://mcp.sfs.tw/code-review/webhook`);
+    console.log(`🔁 手動觸發: POST /trigger  { projectId, mrIid }`);
+    console.log(`💬 留言觸發: 在 MR 留言 /ai-review`);
     console.log(`========================================`);
 });

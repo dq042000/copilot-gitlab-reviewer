@@ -2,3 +2,5 @@ PORT=1689
 GITLAB_URL=
 GITLAB_PRIVATE_TOKEN=
 WEBHOOK_SECRET=
+# 手動觸發端點 /trigger 的保護 Token（留空表示不驗證，建議正式環境設定）
+ADMIN_TOKEN=

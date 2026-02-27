@@ -1,5 +1,9 @@
 import { spawnSync } from 'child_process';
+import https from 'https';
 import axios from 'axios';
+
+// 停用 keep-alive，避免重複使用已關閉的連線造成 EPIPE 錯誤
+const httpsAgent = new https.Agent({ keepAlive: false });
 
 const EXCLUDE_PATTERNS = ['dist/', 'node_modules/', '*.lock', 'vendor/', '.git/'];
 const GITLAB_API_BASE = () => process.env.GITLAB_URL || 'https://gitlab.cloudschool.com.tw';
@@ -180,17 +184,31 @@ ${annotatedDiff}
     }
 };
 
-async function postToGitLab(projectId: number, mrIid: number, filename: string, content: string) {
+async function postToGitLab(projectId: number, mrIid: number, filename: string, content: string, retries = 3) {
     const TOKEN = GITLAB_TOKEN();
     const body = filename ? `#### 🤖 AI Review: \`${filename}\`\n---\n${content}` : content;
 
-    try {
-        await axios.post(
-            `${GITLAB_API_BASE()}/api/v4/projects/${projectId}/merge_requests/${mrIid}/notes`,
-            { body },
-            { headers: { 'PRIVATE-TOKEN': TOKEN }, timeout: 30000 }
-        );
-    } catch (error: any) {
-        console.error('GitLab API 發佈失敗:', error?.message);
+    for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+            await axios.post(
+                `${GITLAB_API_BASE()}/api/v4/projects/${projectId}/merge_requests/${mrIid}/notes`,
+                { body },
+                {
+                    headers: { 'PRIVATE-TOKEN': TOKEN },
+                    timeout: 30000,
+                    httpsAgent
+                }
+            );
+            return; // 成功即結束
+        } catch (error: any) {
+            const isEpipe = error?.code === 'EPIPE' || error?.message?.includes('EPIPE');
+            console.error(`GitLab API 發佈失敗 (第 ${attempt}/${retries} 次):`, error?.message);
+            if (attempt < retries && isEpipe) {
+                // EPIPE 屬於暫時性網路問題，等待後重試
+                await new Promise(r => setTimeout(r, attempt * 1000));
+            } else {
+                break;
+            }
+        }
     }
 }

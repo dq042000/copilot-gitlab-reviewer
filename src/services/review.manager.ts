@@ -98,7 +98,7 @@ export const handleUniversalReview = async (payload: any) => {
         const copilotVersion = spawnSync(copilotBin, ['--version'], { encoding: 'utf8' }).stdout.trim() || 'unknown';
 
         // 儲存審查結果
-        const criticalIssues: string[] = []; // 存放有問題的結果
+        const criticalIssues: { file: string; feedback: string }[] = []; // 存放有問題的結果
         const passedFiles: string[] = [];   // 存放 Pass 的檔名
 
         for (const { path: file, diff: fileDiff } of filesToReview) {
@@ -153,7 +153,7 @@ ${annotatedDiff}
             if (feedback.includes('【PASS】') || feedback === '') {
                 passedFiles.push(file);
             } else {
-                criticalIssues.push(feedback);
+                criticalIssues.push({ file, feedback });
             }
         }
 
@@ -162,8 +162,10 @@ ${annotatedDiff}
         finalComment += `本次共審查 **${filesToReview.length}** 個變更檔案。\n\n`;
 
         if (criticalIssues.length > 0) {
-            finalComment += `### 🔍 審查發現 (${criticalIssues.length} 項建議)\n`;
-            finalComment += criticalIssues.join('\n\n') + `\n\n`;
+            finalComment += `### 🔍 審查發現 (${criticalIssues.length} 個檔案有建議)\n\n`;
+            for (const { file, feedback } of criticalIssues) {
+                finalComment += `#### 📄 \`${file}\`\n\n${feedback}\n\n---\n\n`;
+            }
         }
 
         if (passedFiles.length > 0) {

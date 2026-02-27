@@ -1,6 +1,27 @@
-import { spawnSync } from 'child_process';
+import { spawnSync, spawn } from 'child_process';
 import https from 'https';
 import axios from 'axios';
+
+/**
+ * 非同步執行子程序，取代 spawnSync 以免阻塞事件迴圈
+ */
+function spawnAsync(bin: string, args: string[]): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        const errChunks: Buffer[] = [];
+        const proc = spawn(bin, args);
+        proc.stdout.on('data', (d: Buffer) => chunks.push(d));
+        proc.stderr.on('data', (d: Buffer) => errChunks.push(d));
+        proc.on('error', reject);
+        proc.on('close', (code) => {
+            if (code !== 0 && chunks.length === 0) {
+                reject(new Error(Buffer.concat(errChunks).toString().trim() || `Exit code ${code}`));
+            } else {
+                resolve(Buffer.concat(chunks).toString().trim());
+            }
+        });
+    });
+}
 
 // 停用 keep-alive，避免重複使用已關閉的連線造成 EPIPE 錯誤
 const httpsAgent = new https.Agent({ keepAlive: false });
@@ -89,22 +110,18 @@ export const handleUniversalReview = async (payload: any) => {
 
         if (filesToReview.length === 0) return;
 
-        // 查找 Copilot CLI
+        // 查找 Copilot CLI（非同步執行）
         const homeDir = process.env.HOME || `/home/${process.env.USER}`;
         const copilotBin = spawnSync('/bin/bash', ['-c', `find "${homeDir}/.nvm/versions" -name "copilot" -type f 2>/dev/null | head -1 || which copilot 2>/dev/null || true`], { encoding: 'utf8' }).stdout.trim();
-        
+
         if (!copilotBin) throw new Error('找不到 copilot CLI');
-        
-        const copilotVersion = spawnSync(copilotBin, ['--version'], { encoding: 'utf8' }).stdout.trim() || 'unknown';
 
-        // 儲存審查結果
-        const criticalIssues: { file: string; feedback: string }[] = []; // 存放有問題的結果
-        const passedFiles: string[] = [];   // 存放 Pass 的檔名
+        const copilotVersion = (await spawnAsync(copilotBin, ['--version']).catch(() => 'unknown')) || 'unknown';
 
-        for (const { path: file, diff: fileDiff } of filesToReview) {
-            const annotatedDiff = annotateDiffWithLineNumbers(fileDiff);
+        // 並行審查所有檔案（最多同時 CONCURRENCY 個）
+        const CONCURRENCY = Number(process.env.REVIEW_CONCURRENCY) || 3;
 
-            const prompt = `你是一位資深工程師，請對以下 git diff 進行 Code Review。
+        const buildPrompt = (annotatedDiff: string) => `你是一位資深工程師，請對以下 git diff 進行 Code Review。
 
 ## 審查原則：
 1. **拒絕過度優化**：如果程式碼邏輯正確、可讀性高，且僅是「個人風格」或「微小效能提升（如變數命名）」，請視為通過。
@@ -143,18 +160,33 @@ ${annotatedDiff}
 \`\`\`
 `;
 
-            const result = spawnSync(copilotBin, ['--prompt', prompt], {
-                encoding: 'utf8',
-                maxBuffer: 10 * 1024 * 1024
-            });
+        // 簡易並行控制：每次最多同時執行 CONCURRENCY 個審查
+        const criticalIssues: { file: string; feedback: string }[] = [];
+        const passedFiles: string[] = [];
 
-            const feedback = (result.stdout ?? '').trim();
-
-            if (feedback.includes('【PASS】') || feedback === '') {
-                passedFiles.push(file);
-            } else {
-                criticalIssues.push({ file, feedback });
+        const reviewFile = async (file: string, fileDiff: string) => {
+            const annotatedDiff = annotateDiffWithLineNumbers(fileDiff);
+            const prompt = buildPrompt(annotatedDiff);
+            console.log(`[審查] 開始: ${file}`);
+            try {
+                const feedback = await spawnAsync(copilotBin, ['--prompt', prompt]);
+                if (feedback.includes('【PASS】') || feedback === '') {
+                    passedFiles.push(file);
+                    console.log(`[審查] PASS: ${file}`);
+                } else {
+                    criticalIssues.push({ file, feedback });
+                    console.log(`[審查] 有建議: ${file}`);
+                }
+            } catch (e: any) {
+                console.error(`[審查] 失敗: ${file}`, e?.message);
+                criticalIssues.push({ file, feedback: `> ⚠️ 此檔案審查時發生錯誤：${e?.message}` });
             }
+        };
+
+        // 分批並行執行
+        for (let i = 0; i < filesToReview.length; i += CONCURRENCY) {
+            const batch = filesToReview.slice(i, i + CONCURRENCY);
+            await Promise.all(batch.map(({ path: file, diff: fileDiff }) => reviewFile(file, fileDiff)));
         }
 
         // 構建最終報告內容

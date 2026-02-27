@@ -64,10 +64,22 @@ app.post('/webhook', (req, res) => {
     if (payload.object_kind === 'note') {
         const noteBody: string = payload.object_attributes?.note ?? '';
         const noteableType: string = payload.object_attributes?.noteable_type ?? '';
+        const noteAuthorUsername: string = payload.user?.username ?? '';
+
+        // 忽略 bot 自己發出的留言（依內容特徵判斷），避免形成無限迴圈
+        const isBotNote =
+            noteBody.includes('⏳ **AI Code Review 進行中') ||
+            noteBody.includes('## 🤖 AI Code Review 報告') ||
+            noteBody.includes('🚨 AI Review 發生錯誤');
+        if (isBotNote) {
+            console.log(`[Note] 偵測到 bot 自身留言，略過。(author=${noteAuthorUsername})`);
+            return res.status(200).send('Note from bot, ignored.');
+        }
 
         // Debug：印出完整 note payload 關鍵欄位，方便排查
         console.log(`[Note DEBUG] object_kind=${payload.object_kind}`);
         console.log(`[Note DEBUG] noteable_type=${noteableType}`);
+        console.log(`[Note DEBUG] author=${noteAuthorUsername}`);
         console.log(`[Note DEBUG] note="${noteBody.trim()}"`);
         console.log(`[Note DEBUG] has merge_request=${!!payload.merge_request}`);
         console.log(`[Note DEBUG] merge_request.iid=${payload.merge_request?.iid}`);

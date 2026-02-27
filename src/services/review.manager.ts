@@ -72,6 +72,14 @@ export const handleUniversalReview = async (payload: any) => {
     const mrIid = object_attributes.iid;
 
     try {
+        // 先發一則「審查中」提示，讓工程師知道 AI Review 已啟動
+        await postToGitLab(
+            projectId,
+            mrIid,
+            '',
+            `⏳ **AI Code Review 進行中...**\n\n正在分析本次 MR 的程式碼變更，請稍候，審查結果將會發佈於此留言串。`
+        );
+
         const mrDiffs = await getMrDiffs(projectId, mrIid);
         const filesToReview = mrDiffs.filter(({ path }) => !EXCLUDE_PATTERNS.some(p => path.includes(p)));
 

@@ -2,6 +2,7 @@ PORT=1689
 GITLAB_URL=
 
 # GitLab API Token（用於讀取 MR diff、發佈 MR 留言）
+# User Settings > Access Tokens 中建立，建議只勾選 api 權限，或 read_repository 權限（如果需要讀取 private repo 的 diff），以降低安全風險。
 GITLAB_PRIVATE_TOKEN=
 
 # Copilot / GitHub Token（二擇一即可；若已在 Copilot CLI 模式登入，則可留空）
@@ -12,6 +13,7 @@ GITHUB_TOKEN=
 COPILOT_CLI_PATH=
 
 # GitLab Webhook Secret
+# 自訂一個隨機字串，並在 GitLab Webhook 設定中填入相同的 Secret，以確保只有合法的 Webhook 請求能觸發審查流程。
 WEBHOOK_SECRET=
 
 # 手動觸發端點 /trigger 的保護 Token（留空表示不驗證，建議正式環境設定）

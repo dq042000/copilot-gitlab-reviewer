@@ -1,6 +1,6 @@
 export default async function createCopilotClient() {
-    const apiKey = process.env.COPILOT_API_KEY || process.env.GITHUB_TOKEN;
-    if (!apiKey) throw new Error('請設定 COPILOT_API_KEY 或 GITHUB_TOKEN');
+    const apiKey = process.env.GITLAB_PRIVATE_TOKEN;
+    if (!apiKey) throw new Error('請設定 GITLAB_PRIVATE_TOKEN');
 
     const mod: any = await import('@github/copilot-sdk').catch((err) => {
         throw new Error('無法載入 @github/copilot-sdk: ' + (err?.message ?? err));

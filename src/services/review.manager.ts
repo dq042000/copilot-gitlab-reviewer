@@ -2,14 +2,12 @@ import https from 'https';
 import axios from 'axios';
 import createCopilotClient from './copilot.client.js';
 
-// 使用 Copilot SDK 取代 CLI 呼叫，wrapper 在 src/services/copilot.client.ts
-
 // 停用 keep-alive，避免重複使用已關閉的連線造成 EPIPE 錯誤
 const httpsAgent = new https.Agent({ keepAlive: false });
 
 const EXCLUDE_PATTERNS = ['dist/', 'node_modules/', '*.lock', 'vendor/', '.git/'];
 const GITLAB_API_BASE = () => process.env.GITLAB_URL || 'https://gitlab.cloudschool.com.tw';
-const GITLAB_TOKEN = () => process.env.GITLAB_PRIVATE_TOKEN;
+const GITLAB_TOKEN = () => process.env.COPILOT_API_KEY;
 
 /**
  * 取得 MR 變更檔案
@@ -76,6 +74,7 @@ export const handleUniversalReview = async (payload: any) => {
     const { project, object_attributes } = payload;
     const projectId = project.id;
     const mrIid = object_attributes.iid;
+    let copilot: Awaited<ReturnType<typeof createCopilotClient>> | undefined;
 
     try {
         // 先發一則「審查中」提示，讓工程師知道 AI Review 已啟動
@@ -92,8 +91,9 @@ export const handleUniversalReview = async (payload: any) => {
         if (filesToReview.length === 0) return;
 
         // 使用 SDK 建立 client
-        const copilot = await createCopilotClient();
-        const copilotVersion = copilot.version || (process.env.COPILOT_SDK_VERSION || 'unknown');
+        copilot = await createCopilotClient();
+        const activeCopilot = copilot;
+        const copilotVersion = activeCopilot.version || 'unknown';
 
         // 並行審查所有檔案（最多同時 CONCURRENCY 個）
         const CONCURRENCY = Number(process.env.REVIEW_CONCURRENCY) || 3;
@@ -146,7 +146,7 @@ ${annotatedDiff}
             const prompt = buildPrompt(annotatedDiff);
             console.log(`[審查] 開始: ${file}`);
             try {
-                const feedback = await copilot.generate(prompt);
+                const feedback = await activeCopilot.generate(prompt);
                 if (feedback.includes('【PASS】') || feedback === '') {
                     passedFiles.push(file);
                     console.log(`[審查] PASS: ${file}`);
@@ -192,6 +192,10 @@ ${annotatedDiff}
     } catch (err: any) {
         console.error(`[${mrIid}] 流程出錯:`, err);
         await postToGitLab(projectId, mrIid, '', `🚨 AI Review 發生錯誤：\`${err.message}\``);
+    } finally {
+        if (copilot) {
+            await copilot.close().catch(() => undefined);
+        }
     }
 };
 

@@ -1,6 +1,6 @@
 PORT=1689
 GITLAB_URL=
-GITLAB_PRIVATE_TOKEN=
+COPILOT_API_KEY=
 WEBHOOK_SECRET=
 
 # 手動觸發端點 /trigger 的保護 Token（留空表示不驗證，建議正式環境設定）
@@ -9,4 +9,4 @@ ADMIN_TOKEN=
 # 並行審查檔案數（預設 3，可依機器效能調整）
 REVIEW_CONCURRENCY=3
 
-COPILOT_MODEL=git-5-mini
+COPILOT_MODEL=gpt-5-mini

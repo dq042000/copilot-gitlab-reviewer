@@ -1,27 +1,8 @@
-import { spawnSync, spawn } from 'child_process';
 import https from 'https';
 import axios from 'axios';
+import createCopilotClient from './copilot.client.js';
 
-/**
- * 非同步執行子程序，取代 spawnSync 以免阻塞事件迴圈
- */
-function spawnAsync(bin: string, args: string[]): Promise<string> {
-    return new Promise((resolve, reject) => {
-        const chunks: Buffer[] = [];
-        const errChunks: Buffer[] = [];
-        const proc = spawn(bin, args);
-        proc.stdout.on('data', (d: Buffer) => chunks.push(d));
-        proc.stderr.on('data', (d: Buffer) => errChunks.push(d));
-        proc.on('error', reject);
-        proc.on('close', (code) => {
-            if (code !== 0 && chunks.length === 0) {
-                reject(new Error(Buffer.concat(errChunks).toString().trim() || `Exit code ${code}`));
-            } else {
-                resolve(Buffer.concat(chunks).toString().trim());
-            }
-        });
-    });
-}
+// 使用 Copilot SDK 取代 CLI 呼叫，wrapper 在 src/services/copilot.client.ts
 
 // 停用 keep-alive，避免重複使用已關閉的連線造成 EPIPE 錯誤
 const httpsAgent = new https.Agent({ keepAlive: false });
@@ -110,13 +91,9 @@ export const handleUniversalReview = async (payload: any) => {
 
         if (filesToReview.length === 0) return;
 
-        // 查找 Copilot CLI（非同步執行）
-        const homeDir = process.env.HOME || `/home/${process.env.USER}`;
-        const copilotBin = spawnSync('/bin/bash', ['-c', `find "${homeDir}/.nvm/versions" -name "copilot" -type f 2>/dev/null | head -1 || which copilot 2>/dev/null || true`], { encoding: 'utf8' }).stdout.trim();
-
-        if (!copilotBin) throw new Error('找不到 copilot CLI');
-
-        const copilotVersion = (await spawnAsync(copilotBin, ['--version']).catch(() => 'unknown')) || 'unknown';
+        // 使用 SDK 建立 client
+        const copilot = await createCopilotClient();
+        const copilotVersion = copilot.version || (process.env.COPILOT_SDK_VERSION || 'unknown');
 
         // 並行審查所有檔案（最多同時 CONCURRENCY 個）
         const CONCURRENCY = Number(process.env.REVIEW_CONCURRENCY) || 3;
@@ -169,7 +146,7 @@ ${annotatedDiff}
             const prompt = buildPrompt(annotatedDiff);
             console.log(`[審查] 開始: ${file}`);
             try {
-                const feedback = await spawnAsync(copilotBin, ['--prompt', prompt]);
+                const feedback = await copilot.generate(prompt);
                 if (feedback.includes('【PASS】') || feedback === '') {
                     passedFiles.push(file);
                     console.log(`[審查] PASS: ${file}`);

@@ -1,6 +1,13 @@
 PORT=1689
 GITLAB_URL=
+
+# GitLab API Token（用於讀取 MR diff、發佈 MR 留言）
+GITLAB_PRIVATE_TOKEN=
+
+# Copilot / GitHub Token（二擇一即可）
 COPILOT_API_KEY=
+GITHUB_TOKEN=
+
 WEBHOOK_SECRET=
 
 # 手動觸發端點 /trigger 的保護 Token（留空表示不驗證，建議正式環境設定）

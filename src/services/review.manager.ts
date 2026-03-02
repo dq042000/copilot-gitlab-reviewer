@@ -7,7 +7,15 @@ const httpsAgent = new https.Agent({ keepAlive: false });
 
 const EXCLUDE_PATTERNS = ['dist/', 'node_modules/', '*.lock', 'vendor/', '.git/'];
 const GITLAB_API_BASE = () => process.env.GITLAB_URL || 'https://gitlab.cloudschool.com.tw';
-const GITLAB_TOKEN = () => process.env.COPILOT_API_KEY;
+const GITLAB_TOKEN = () => process.env.GITLAB_PRIVATE_TOKEN || process.env.GITLAB_TOKEN;
+
+function requireGitLabToken(): string {
+    const token = GITLAB_TOKEN();
+    if (!token) {
+        throw new Error('缺少 GitLab Token，請設定 GITLAB_PRIVATE_TOKEN（或 GITLAB_TOKEN）');
+    }
+    return token;
+}
 
 /**
  * 取得 MR 變更檔案
@@ -15,10 +23,11 @@ const GITLAB_TOKEN = () => process.env.COPILOT_API_KEY;
 async function getMrDiffs(projectId: number, mrIid: number): Promise<{ path: string; diff: string }[]> {
     const results: { path: string; diff: string }[] = [];
     try {
+        const token = requireGitLabToken();
         const res = await axios.get(
             `${GITLAB_API_BASE()}/api/v4/projects/${projectId}/merge_requests/${mrIid}/changes`,
             {
-                headers: { 'PRIVATE-TOKEN': GITLAB_TOKEN() },
+                headers: { 'PRIVATE-TOKEN': token },
                 params: { per_page: 100 },
                 timeout: 30000
             }
@@ -200,7 +209,7 @@ ${annotatedDiff}
 };
 
 async function postToGitLab(projectId: number, mrIid: number, filename: string, content: string, retries = 3) {
-    const TOKEN = GITLAB_TOKEN();
+    const TOKEN = requireGitLabToken();
     const body = filename ? `#### 🤖 AI Review: \`${filename}\`\n---\n${content}` : content;
 
     for (let attempt = 1; attempt <= retries; attempt++) {

@@ -1,6 +1,6 @@
 # copilot-gitlab-reviewer
 
-一個部署在自架伺服器上的 GitLab Webhook 服務，當有 Merge Request 建立或更新時，自動呼叫 **GitHub Copilot CLI** 對變更的程式碼進行 AI 審查，並將審查結果以留言方式回寫到 GitLab MR。
+一個部署在自架伺服器上的 GitLab Webhook 服務，當有 Merge Request 建立或更新時，自動透過 **`@github/copilot-sdk`**（底層控制 Copilot CLI）對變更的程式碼進行 AI 審查，並將審查結果以留言方式回寫到 GitLab MR。
 
 ---
 
@@ -8,7 +8,7 @@
 
 - 接收 GitLab Webhook 的 Merge Request 事件
 - 自動 Clone 來源分支並與目標分支進行 diff
-- 逐一檔案呼叫 GitHub Copilot CLI (`@github/copilot`) 產生 AI 審查意見
+- 逐一檔案透過 `@github/copilot-sdk` 產生 AI 審查意見
 - 將審查結果以 Markdown 留言形式發布到 GitLab MR
 - 若審查過程發生任何錯誤，也會在 MR 留言通知工程師人工介入
 - 支援只對指定目標分支（如 `master`、`develop`）觸發審查
@@ -35,19 +35,19 @@
 npm install
 ```
 
-### 2. 安裝 GitHub Copilot CLI
+### 2. 安裝 GitHub Copilot CLI（供 SDK 使用）
 
 ```bash
 npm install -g @github/copilot
 ```
 
-安裝完成後請確認已登入：
+安裝完成後請確認可正常執行：
 
 ```bash
 copilot --help
 ```
 
-> 若使用 nvm，服務啟動時會自動從 `~/.nvm/versions/` 查找 `copilot` binary 的絕對路徑，無需手動設定 PATH。
+> 若 CLI 不在預設 PATH，可設定 `.env` 的 `COPILOT_CLI_PATH` 指定執行檔路徑。
 
 ### 3. 設定環境變數
 
@@ -63,7 +63,11 @@ cp env-sample .env
 PORT=1689
 GITLAB_URL=https://your-gitlab.example.com
 GITLAB_PRIVATE_TOKEN=glpat-xxxxxxxxxxxxxxxxxxxx
+COPILOT_API_KEY=ghp_xxxxxxxxxxxxxxxxxxxx
+# 或使用 GITHUB_TOKEN（二擇一）
+# GITHUB_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx
 WEBHOOK_SECRET=your-random-secret-string
+COPILOT_MODEL=gpt-5-mini
 ```
 
 | 變數名稱 | 說明 |
@@ -71,7 +75,13 @@ WEBHOOK_SECRET=your-random-secret-string
 | `PORT` | 服務監聽的 Port |
 | `GITLAB_URL` | GitLab 網址（不含結尾 `/`） |
 | `GITLAB_PRIVATE_TOKEN` | GitLab Personal Access Token（需有 `api` 權限） |
+| `COPILOT_API_KEY` | Copilot/GitHub Token（供 `@github/copilot-sdk` 使用） |
+| `GITHUB_TOKEN` | Copilot Token 替代欄位（與 `COPILOT_API_KEY` 擇一） |
 | `WEBHOOK_SECRET` | GitLab Webhook 設定中填入的 Secret Token |
+| `COPILOT_MODEL` | Copilot 模型名稱（預設 `gpt-5-mini`） |
+| `COPILOT_CLI_PATH` | Copilot CLI 路徑（選填） |
+
+> 建議將 `GITLAB_PRIVATE_TOKEN` 與 `COPILOT_API_KEY` 分開，不要共用同一把 Token。
 
 ### 4. 建構 TypeScript
 
@@ -93,7 +103,7 @@ npm run dev
 
 ```bash
 npm run build
-npm run review:bg
+npm run start:bg
 ```
 
 查看 PM2 狀態與日誌：
@@ -205,7 +215,7 @@ GitLab MR 事件
   git diff FETCH_HEAD HEAD (取得變更檔案清單)
       │
       ▼
-  逐一檔案 ──► copilot --prompt (AI 審查)
+    逐一檔案 ──► @github/copilot-sdk (AI 審查)
       │
       ▼
   POST /api/v4/projects/:id/merge_requests/:iid/notes
@@ -231,10 +241,10 @@ GitLab MR 事件
 ## 常見問題
 
 **Q: 服務顯示 `copilot CLI 找不到`**  
-A: 確認已執行 `npm install -g @github/copilot`，且 nvm 的 Node.js 版本與安裝時一致。
+A: 確認已執行 `npm install -g @github/copilot`，若路徑非預設，請設定 `COPILOT_CLI_PATH`。
 
 **Q: GitLab API 回傳 401**  
-A: 確認 `GITLAB_PRIVATE_TOKEN` 具有 `api` scope，且 Token 未過期。
+A: 確認 `GITLAB_PRIVATE_TOKEN` 具有 `api` scope，且不要誤用 `COPILOT_API_KEY` 當作 GitLab Token。
 
 **Q: MR 沒有收到留言**  
 A: 查看 PM2 日誌 `pm2 logs copilot-bot`，確認是否有 `Copilot 回覆為空` 或 `GitLab API 撥叫失敗` 的訊息。

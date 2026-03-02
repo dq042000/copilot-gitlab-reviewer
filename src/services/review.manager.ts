@@ -103,6 +103,7 @@ export const handleUniversalReview = async (payload: any) => {
         copilot = await createCopilotClient();
         const activeCopilot = copilot;
         const copilotVersion = activeCopilot.version || 'unknown';
+        const copilotModel = process.env.COPILOT_MODEL || 'gpt-5-mini';
 
         // 並行審查所有檔案（最多同時 CONCURRENCY 個）
         const CONCURRENCY = Number(process.env.REVIEW_CONCURRENCY) || 3;
@@ -193,7 +194,7 @@ ${annotatedDiff}
             finalComment += `\n</details>\n\n`;
         }
 
-        finalComment += `---\n_模型：GitHub Copilot | 版本：\`${copilotVersion}\`_`;
+        finalComment += `---\n_模型：\`${copilotModel}\` | SDK：\`${copilotVersion}\`_`;
 
         // 只發送一則總結留言
         await postToGitLab(projectId, mrIid, '', finalComment);

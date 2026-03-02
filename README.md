@@ -66,10 +66,22 @@ cp env-sample .env
 | `COPILOT_API_KEY` | Copilot/GitHub token（與下列欄位擇一） | 否 |
 | `GITHUB_TOKEN` | Copilot token 替代欄位 | 否 |
 
-認證建議：
+認證建議與 GITLAB_PRIVATE_TOKEN 使用說明：
 
-- GitLab 與 Copilot token 請分開，不要共用
-- 若伺服器已用 Copilot CLI 登入，可不填 `COPILOT_API_KEY` / `GITHUB_TOKEN`
+- 建議不要與 Copilot token 共用，GitLab token 與 Copilot（GitHub）token 分開管理。
+
+- 建立 Personal Access Token（使用者設定 -> Access Tokens）：
+  1. 前往 GitLab 上方使用者頭像 > Settings > Access Tokens。
+  2. 填寫 Name，建議設定 Expiration date（過期日）。
+  3. 權限（Scopes）建議：
+     - `api`（建議）：能存取 MR、notes、repository 等所有需要的 API。
+     - 若只需讀取 private repository 的 diff，可改為只勾選 `read_repository`（較小權限）。
+
+- 也可以使用 Project Access Token / Deploy Token（Project Settings -> Repository -> Deploy Tokens），但請確認所用 token 有權限讀取 MR 並發表留言。
+
+- 設定方式：將產生的 token 放入伺服器的 `.env`（例如 `GITLAB_PRIVATE_TOKEN=xxxx`），或在部署平台／CI 的環境變數中設定（例如 GitLab：Project -> Settings -> CI/CD -> Variables）。切勿將 token 提交到版本控制；在可能的情況下設定過期日與定期輪換。
+
+- 最佳實務：僅授權最小必要權限、設定過期日、並使用環境變數或秘密管理服務保護 token。
 
 ### 4) 開發模式
 

@@ -1,6 +1,5 @@
 import express from 'express';
 import dotenv from 'dotenv';
-// 注意：如果你使用 tsx 執行，不需要加 .js 後綴
 import { handleUniversalReview } from './services/review.manager.js';
 
 // 讀取 .env 設定

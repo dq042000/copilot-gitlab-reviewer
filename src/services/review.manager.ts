@@ -1,13 +1,21 @@
-import { spawnSync } from 'child_process';
 import https from 'https';
 import axios from 'axios';
+import createCopilotClient from './copilot.client.js';
 
 // 停用 keep-alive，避免重複使用已關閉的連線造成 EPIPE 錯誤
 const httpsAgent = new https.Agent({ keepAlive: false });
 
 const EXCLUDE_PATTERNS = ['dist/', 'node_modules/', '*.lock', 'vendor/', '.git/'];
 const GITLAB_API_BASE = () => process.env.GITLAB_URL || 'https://gitlab.cloudschool.com.tw';
-const GITLAB_TOKEN = () => process.env.GITLAB_PRIVATE_TOKEN;
+const GITLAB_TOKEN = () => process.env.GITLAB_PRIVATE_TOKEN || process.env.GITLAB_TOKEN;
+
+function requireGitLabToken(): string {
+    const token = GITLAB_TOKEN();
+    if (!token) {
+        throw new Error('缺少 GitLab Token，請設定 GITLAB_PRIVATE_TOKEN（或 GITLAB_TOKEN）');
+    }
+    return token;
+}
 
 /**
  * 取得 MR 變更檔案
@@ -15,10 +23,11 @@ const GITLAB_TOKEN = () => process.env.GITLAB_PRIVATE_TOKEN;
 async function getMrDiffs(projectId: number, mrIid: number): Promise<{ path: string; diff: string }[]> {
     const results: { path: string; diff: string }[] = [];
     try {
+        const token = requireGitLabToken();
         const res = await axios.get(
             `${GITLAB_API_BASE()}/api/v4/projects/${projectId}/merge_requests/${mrIid}/changes`,
             {
-                headers: { 'PRIVATE-TOKEN': GITLAB_TOKEN() },
+                headers: { 'PRIVATE-TOKEN': token },
                 params: { per_page: 100 },
                 timeout: 30000
             }
@@ -74,6 +83,7 @@ export const handleUniversalReview = async (payload: any) => {
     const { project, object_attributes } = payload;
     const projectId = project.id;
     const mrIid = object_attributes.iid;
+    let copilot: Awaited<ReturnType<typeof createCopilotClient>> | undefined;
 
     try {
         // 先發一則「審查中」提示，讓工程師知道 AI Review 已啟動
@@ -89,22 +99,16 @@ export const handleUniversalReview = async (payload: any) => {
 
         if (filesToReview.length === 0) return;
 
-        // 查找 Copilot CLI
-        const homeDir = process.env.HOME || `/home/${process.env.USER}`;
-        const copilotBin = spawnSync('/bin/bash', ['-c', `find "${homeDir}/.nvm/versions" -name "copilot" -type f 2>/dev/null | head -1 || which copilot 2>/dev/null || true`], { encoding: 'utf8' }).stdout.trim();
-        
-        if (!copilotBin) throw new Error('找不到 copilot CLI');
-        
-        const copilotVersion = spawnSync(copilotBin, ['--version'], { encoding: 'utf8' }).stdout.trim() || 'unknown';
+        // 使用 SDK 建立 client
+        copilot = await createCopilotClient();
+        const activeCopilot = copilot;
+        const copilotVersion = activeCopilot.version || 'unknown';
+        const copilotModel = process.env.COPILOT_MODEL || 'gpt-5-mini';
 
-        // 儲存審查結果
-        const criticalIssues: { file: string; feedback: string }[] = []; // 存放有問題的結果
-        const passedFiles: string[] = [];   // 存放 Pass 的檔名
+        // 並行審查所有檔案（最多同時 CONCURRENCY 個）
+        const CONCURRENCY = Number(process.env.REVIEW_CONCURRENCY) || 3;
 
-        for (const { path: file, diff: fileDiff } of filesToReview) {
-            const annotatedDiff = annotateDiffWithLineNumbers(fileDiff);
-
-            const prompt = `你是一位資深工程師，請對以下 git diff 進行 Code Review。
+        const buildPrompt = (annotatedDiff: string) => `你是一位資深工程師，請對以下 git diff 進行 Code Review。
 
 ## 審查原則：
 1. **拒絕過度優化**：如果程式碼邏輯正確、可讀性高，且僅是「個人風格」或「微小效能提升（如變數命名）」，請視為通過。
@@ -143,18 +147,33 @@ ${annotatedDiff}
 \`\`\`
 `;
 
-            const result = spawnSync(copilotBin, ['--prompt', prompt], {
-                encoding: 'utf8',
-                maxBuffer: 10 * 1024 * 1024
-            });
+        // 簡易並行控制：每次最多同時執行 CONCURRENCY 個審查
+        const criticalIssues: { file: string; feedback: string }[] = [];
+        const passedFiles: string[] = [];
 
-            const feedback = (result.stdout ?? '').trim();
-
-            if (feedback.includes('【PASS】') || feedback === '') {
-                passedFiles.push(file);
-            } else {
-                criticalIssues.push({ file, feedback });
+        const reviewFile = async (file: string, fileDiff: string) => {
+            const annotatedDiff = annotateDiffWithLineNumbers(fileDiff);
+            const prompt = buildPrompt(annotatedDiff);
+            console.log(`[審查] 開始: ${file}`);
+            try {
+                const feedback = await activeCopilot.generate(prompt);
+                if (feedback.includes('【PASS】') || feedback === '') {
+                    passedFiles.push(file);
+                    console.log(`[審查] PASS: ${file}`);
+                } else {
+                    criticalIssues.push({ file, feedback });
+                    console.log(`[審查] 有建議: ${file}`);
+                }
+            } catch (e: any) {
+                console.error(`[審查] 失敗: ${file}`, e?.message);
+                criticalIssues.push({ file, feedback: `> ⚠️ 此檔案審查時發生錯誤：${e?.message}` });
             }
+        };
+
+        // 分批並行執行
+        for (let i = 0; i < filesToReview.length; i += CONCURRENCY) {
+            const batch = filesToReview.slice(i, i + CONCURRENCY);
+            await Promise.all(batch.map(({ path: file, diff: fileDiff }) => reviewFile(file, fileDiff)));
         }
 
         // 構建最終報告內容
@@ -175,7 +194,7 @@ ${annotatedDiff}
             finalComment += `\n</details>\n\n`;
         }
 
-        finalComment += `---\n_模型：GitHub Copilot | 版本：\`${copilotVersion}\`_`;
+        finalComment += `---\n_模型：\`${copilotModel}\` | SDK：\`${copilotVersion}\`_`;
 
         // 只發送一則總結留言
         await postToGitLab(projectId, mrIid, '', finalComment);
@@ -183,11 +202,15 @@ ${annotatedDiff}
     } catch (err: any) {
         console.error(`[${mrIid}] 流程出錯:`, err);
         await postToGitLab(projectId, mrIid, '', `🚨 AI Review 發生錯誤：\`${err.message}\``);
+    } finally {
+        if (copilot) {
+            await copilot.close().catch(() => undefined);
+        }
     }
 };
 
 async function postToGitLab(projectId: number, mrIid: number, filename: string, content: string, retries = 3) {
-    const TOKEN = GITLAB_TOKEN();
+    const TOKEN = requireGitLabToken();
     const body = filename ? `#### 🤖 AI Review: \`${filename}\`\n---\n${content}` : content;
 
     for (let attempt = 1; attempt <= retries; attempt++) {

@@ -1,240 +1,168 @@
-# copilot-gitlab-reviewer
+## 專案說明
 
-一個部署在自架伺服器上的 GitLab Webhook 服務，當有 Merge Request 建立或更新時，自動呼叫 **GitHub Copilot CLI** 對變更的程式碼進行 AI 審查，並將審查結果以留言方式回寫到 GitLab MR。
+`copilot-gitlab-reviewer` 是一個 GitLab Webhook 服務。
+當 MR 事件或 `/ai-review` 留言觸發時，服務會讀取 MR diff，
+用 `@github/copilot-sdk` 呼叫 Copilot 進行審查，最後回寫
+到 GitLab MR 留言。
 
----
+## 部署前檢查清單
 
-## 功能特色
+- 已設定 `GITLAB_URL`、`GITLAB_PRIVATE_TOKEN`、`WEBHOOK_SECRET`
+- `GITLAB_PRIVATE_TOKEN` 與 `COPILOT_API_KEY` / `GITHUB_TOKEN` 未混用
+- `copilot --help` 可正常執行（必要時設定 `COPILOT_CLI_PATH`）
+- GitLab Webhook 已啟用 `Merge request events`（留言觸發需 `Note events`）
+- 先用 `POST /trigger` 測一筆，確認 MR 可收到「審查中」與最終報告
 
-- 接收 GitLab Webhook 的 Merge Request 事件
-- 自動 Clone 來源分支並與目標分支進行 diff
-- 逐一檔案呼叫 GitHub Copilot CLI (`@github/copilot`) 產生 AI 審查意見
-- 將審查結果以 Markdown 留言形式發布到 GitLab MR
-- 若審查過程發生任何錯誤，也會在 MR 留言通知工程師人工介入
-- 支援只對指定目標分支（如 `master`、`develop`）觸發審查
-- 以 PM2 背景執行，確保服務穩定運作
+## 功能重點
 
----
+- 支援兩種觸發方式：MR 事件、MR 留言 `/ai-review`
+- 先發「審查中」訊息，再發送最終整合報告
+- 只審查指定目標分支（`develop`、`master`、`main`、`production`）
+- 支援排除路徑（`dist/`、`node_modules/`、`*.lock`、`vendor/`、`.git/`）
+- 留言報告會顯示使用的 model 與 SDK 資訊
 
 ## 系統需求
 
-| 項目 | 版本需求 |
-|------|----------|
-| Node.js | v18+ (建議使用 nvm 管理) |
-| TypeScript | v5+ |
-| GitHub Copilot CLI | `@github/copilot` (全域安裝) |
-| PM2 | 全域安裝（正式環境用） |
+| 項目 | 版本 |
+|---|---|
+| Node.js | 18+（建議用 nvm） |
+| npm | 9+ |
+| Copilot CLI | `@github/copilot`（建議全域安裝） |
+| PM2 | 正式環境建議使用 |
 
----
+## 安裝與啟動
 
-## 安裝步驟
-
-### 1. 安裝相依套件
+### 1) 安裝相依套件
 
 ```bash
 npm install
 ```
 
-### 2. 安裝 GitHub Copilot CLI
+### 2) 安裝 Copilot CLI（SDK 會使用）
 
 ```bash
 npm install -g @github/copilot
-```
-
-安裝完成後請確認已登入：
-
-```bash
 copilot --help
 ```
 
-> 若使用 nvm，服務啟動時會自動從 `~/.nvm/versions/` 查找 `copilot` binary 的絕對路徑，無需手動設定 PATH。
-
-### 3. 設定環境變數
-
-複製範本並填入實際值：
+### 3) 建立環境變數
 
 ```bash
 cp env-sample .env
 ```
 
-編輯 `.env`：
+`.env` 主要欄位如下：
 
-```dotenv
-PORT=1689
-GITLAB_URL=https://your-gitlab.example.com
-GITLAB_PRIVATE_TOKEN=glpat-xxxxxxxxxxxxxxxxxxxx
-WEBHOOK_SECRET=your-random-secret-string
-```
+| 變數 | 用途 | 必填 |
+|---|---|---|
+| `PORT` | 服務埠號 | 否（預設 3000） |
+| `GITLAB_URL` | GitLab 主站 URL | 是 |
+| `GITLAB_PRIVATE_TOKEN` | GitLab API token（讀 MR / 發 MR 留言） | 是 |
+| `WEBHOOK_SECRET` | GitLab Webhook secret | 建議 |
+| `ADMIN_TOKEN` | `/trigger` 端點保護 token | 否 |
+| `REVIEW_CONCURRENCY` | 同時審查檔案數 | 否（預設 3） |
+| `COPILOT_MODEL` | 審查模型名稱 | 否（預設 `gpt-5-mini`） |
+| `COPILOT_CLI_PATH` | 指定 copilot 執行檔路徑 | 否 |
+| `COPILOT_API_KEY` | Copilot/GitHub token（與下列欄位擇一） | 否 |
+| `GITHUB_TOKEN` | Copilot token 替代欄位 | 否 |
 
-| 變數名稱 | 說明 |
-|----------|------|
-| `PORT` | 服務監聽的 Port |
-| `GITLAB_URL` | GitLab 網址（不含結尾 `/`） |
-| `GITLAB_PRIVATE_TOKEN` | GitLab Personal Access Token（需有 `api` 權限） |
-| `WEBHOOK_SECRET` | GitLab Webhook 設定中填入的 Secret Token |
+認證建議：
 
-### 4. 建構 TypeScript
+- GitLab 與 Copilot token 請分開，不要共用
+- 若伺服器已用 Copilot CLI 登入，可不填 `COPILOT_API_KEY` / `GITHUB_TOKEN`
 
-```bash
-npm run build
-```
-
----
-
-## 啟動服務
-
-### 開發模式（熱重載）
+### 4) 開發模式
 
 ```bash
 npm run dev
 ```
 
-### 正式環境（PM2 背景執行）
+### 5) 正式環境（PM2）
 
 ```bash
 npm run build
-npm run review:bg
+npm run start:bg
 ```
 
-查看 PM2 狀態與日誌：
+常用 PM2 指令：
 
 ```bash
-pm2 status
-pm2 logs copilot-bot
+npm run start:logs
+npm run start:restart
+npm run start:stop
+npm run start:remove
 ```
-
----
 
 ## GitLab Webhook 設定
 
-### 步驟一：取得 Webhook URL
+Webhook URL：
 
-確認服務已啟動並可從外部存取，Webhook URL 格式為：
-
-```
-https://your-server.example.com/webhook
+```text
+https://<your-domain>/webhook
 ```
 
-### 步驟二：產生 Secret Token
+GitLab 專案設定：
 
-建議使用以下指令產生一組隨機 Token，並填入 `.env` 的 `WEBHOOK_SECRET`：
+- `Settings` → `Webhooks`
+- `URL`：填入上面的 `/webhook`
+- `Secret token`：填入 `WEBHOOK_SECRET`
+- 觸發事件建議至少勾選：`Merge request events`
+- 需使用留言觸發 `/ai-review` 時，請另外啟用 `Note events`
+
+## API 與觸發
+
+### `POST /webhook`
+
+- 驗證 `x-gitlab-token`（若設定了 `WEBHOOK_SECRET`）
+- 支援：
+    - MR 事件（`open` / `update` / `reopen` / GitLab test 的 `undefined`）
+    - MR 留言事件，留言內容完全等於 `/ai-review`
+
+### `POST /trigger`
+
+手動觸發審查（可搭配 `x-admin-token`）：
 
 ```bash
-openssl rand -base64 60 | tr -d '\n'
+curl -X POST 'http://localhost:1689/trigger' \
+    -H 'Content-Type: application/json' \
+    -H 'x-admin-token: <ADMIN_TOKEN>' \
+    -d '{"projectId":47,"mrIid":7}'
 ```
 
-### 步驟三：在 GitLab 新增 Webhook
+## 審查流程（目前實作）
 
-1. 進入要設定的 GitLab **專案頁面**
-2. 點選左側選單 **Settings（設定）**
-3. 點選 **Webhooks**
-4. 點選右上角 **Add new webhook** 按鈕
-5. 填入以下欄位：
-
-   | 欄位 | 填入值 |
-   |------|--------|
-   | **URL** | `https://your-server.example.com/webhook` |
-   | **Secret token** | `.env` 中的 `WEBHOOK_SECRET` 值 |
-   | **Trigger** | 勾選 ✅ **Merge request events** |
-   | **Enable SSL verification** | 啟用（若為自簽憑證可視情況關閉） |
-
-6. 點選 **Add webhook** 儲存
-
-### 步驟四：測試 Webhook 連線
-
-1. 儲存後，在 Webhook 列表中找到剛新增的項目
-2. 點選右側 **Test** 下拉選單
-3. 選擇 **Merge request events**
-4. GitLab 會送出一筆測試請求，確認服務回傳 `202 Accepted`
-5. 同時查看伺服器日誌確認收到請求：
-
-   ```bash
-   pm2 logs copilot-bot
-   # 應看到：[Webhook] 收到請求，來源 Token 長度: xxx
-   ```
-
-> **注意**：GitLab Test 按鈕送出的 MR action 為 `undefined`，服務已允許此情況通過，方便測試連線是否正常。
-
----
-
-## 審查觸發條件
-
-只有符合以下條件的 MR 事件才會觸發審查：
-
-- **事件類型**：`merge_request`
-- **MR Action**：`open`、`update`、`reopen`（或 GitLab Test 按鈕的 `undefined`）
-- **目標分支**：`develop`、`master`、`main`、`production`（可在 `src/index.ts` 中調整）
-
----
+1. 接收事件並驗證 secret
+2. 取得 MR 變更：`GET /api/v4/projects/:id/merge_requests/:iid/changes`
+3. 過濾排除檔案後逐檔送入 Copilot SDK
+4. 彙整結果後留言到 MR：
+     `POST /api/v4/projects/:id/merge_requests/:iid/notes`
 
 ## 專案結構
 
+```text
+src/
+    index.ts
+    services/
+        copilot.client.ts
+        review.manager.ts
+env-sample
+package.json
+tsconfig.json
 ```
-copilot-gitlab-reviewer/
-├── src/
-│   ├── index.ts                # Express 伺服器、Webhook 路由
-│   └── services/
-│       └── review.manager.ts   # 核心審查邏輯（Git diff + Copilot + GitLab API）
-├── dist/                       # TypeScript 編譯輸出
-├── .env                        # 環境變數（不進版控）
-├── env-sample                  # 環境變數範本
-├── package.json
-└── tsconfig.json
-```
-
----
-
-## 審查流程說明
-
-```
-GitLab MR 事件
-      │
-      ▼
-  驗證 Secret Token
-      │
-      ▼
-  確認事件類型與目標分支
-      │
-      ▼
-  git clone --depth 1 (來源分支)
-      │
-      ▼
-  git fetch --depth 1 (目標分支)
-      │
-      ▼
-  git diff FETCH_HEAD HEAD (取得變更檔案清單)
-      │
-      ▼
-  逐一檔案 ──► copilot --prompt (AI 審查)
-      │
-      ▼
-  POST /api/v4/projects/:id/merge_requests/:iid/notes
-  (將審查結果寫入 GitLab MR 留言)
-```
-
----
-
-## 排除審查的檔案類型
-
-以下路徑/類型的檔案會被自動略過：
-
-- `dist/`
-- `node_modules/`
-- `*.lock`
-- `vendor/`
-- `.git/`
-
-可在 `src/services/review.manager.ts` 的 `EXCLUDE_PATTERNS` 陣列中調整。
-
----
 
 ## 常見問題
 
-**Q: 服務顯示 `copilot CLI 找不到`**  
-A: 確認已執行 `npm install -g @github/copilot`，且 nvm 的 Node.js 版本與安裝時一致。
+### 1) `Authorization error, you may need to run /login`
 
-**Q: GitLab API 回傳 401**  
-A: 確認 `GITLAB_PRIVATE_TOKEN` 具有 `api` scope，且 Token 未過期。
+- 若使用 token，請確認 `COPILOT_API_KEY` / `GITHUB_TOKEN` 對應帳號有 Copilot 使用權限
+- 若使用 CLI 已登入模式，清空 token 變數後以服務執行帳號重新登入 Copilot CLI
 
-**Q: MR 沒有收到留言**  
-A: 查看 PM2 日誌 `pm2 logs copilot-bot`，確認是否有 `Copilot 回覆為空` 或 `GitLab API 撥叫失敗` 的訊息。
+### 2) GitLab API 401 / 404
+
+- 確認 `GITLAB_PRIVATE_TOKEN` 正確且有 `api` 權限
+- 確認 `projectId`、`mrIid` 與 `GITLAB_URL` 正確
+
+### 3) 找不到 Copilot CLI
+
+- 確認 `copilot --help` 可執行
+- 必要時設定 `COPILOT_CLI_PATH`

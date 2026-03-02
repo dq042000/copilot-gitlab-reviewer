@@ -21,7 +21,7 @@
     "axios": "^1.13.5",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
-    "@github/copilot-sdk": "^1.0.0"
+    "@github/copilot-sdk": "^0.1.29"
   },
   "devDependencies": {
     "@types/dotenv": "^6.1.1",

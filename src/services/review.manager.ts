@@ -9,6 +9,14 @@ const EXCLUDE_PATTERNS = ['dist/', 'node_modules/', '*.lock', 'vendor/', '.git/'
 const GITLAB_API_BASE = () => process.env.GITLAB_URL || 'https://gitlab.cloudschool.com.tw';
 const GITLAB_TOKEN = () => process.env.GITLAB_PRIVATE_TOKEN || process.env.GITLAB_TOKEN;
 
+function isPassFeedback(feedback: string): boolean {
+    const normalized = (feedback || '').trim();
+    if (!normalized) return true;
+
+    const passKeywords = ['【PASS】', 'PASS', '✅ 無發現明顯問題', '無發現明顯問題', '沒問題', '沒有問題'];
+    return passKeywords.some(keyword => normalized.includes(keyword));
+}
+
 function requireGitLabToken(): string {
     const token = GITLAB_TOKEN();
     if (!token) {
@@ -97,7 +105,10 @@ export const handleUniversalReview = async (payload: any) => {
         const mrDiffs = await getMrDiffs(projectId, mrIid);
         const filesToReview = mrDiffs.filter(({ path }) => !EXCLUDE_PATTERNS.some(p => path.includes(p)));
 
-        if (filesToReview.length === 0) return;
+        if (filesToReview.length === 0) {
+            await postToGitLab(projectId, mrIid, '', '✅ 本次 MR 沒有可審查的程式碼差異（或皆為排除項目），無需提出建議。');
+            return;
+        }
 
         // 使用 SDK 建立 client
         copilot = await createCopilotClient();
@@ -124,7 +135,7 @@ diff 中每行前綴說明：
 - [DEL  -] 表示被刪除的行
 - [L42  ] 表示未變更的上下文行
 
-請用以下 Markdown 格式回覆（若無問題，最後僅輸出「✅ 無發現明顯問題」即可）：
+請用以下 Markdown 格式回覆（若無問題，請僅輸出「【PASS】」）：
 
 ---
 ### 🔴 問題 N：簡短標題
@@ -157,7 +168,7 @@ ${annotatedDiff}
             console.log(`[審查] 開始: ${file}`);
             try {
                 const feedback = await activeCopilot.generate(prompt);
-                if (feedback.includes('【PASS】') || feedback === '') {
+                if (isPassFeedback(feedback)) {
                     passedFiles.push(file);
                     console.log(`[審查] PASS: ${file}`);
                 } else {
@@ -185,6 +196,9 @@ ${annotatedDiff}
             for (const { file, feedback } of criticalIssues) {
                 finalComment += `#### 📄 \`${file}\`\n\n${feedback}\n\n---\n\n`;
             }
+        } else {
+            finalComment += `### ✅ 審查結果\n\n`;
+            finalComment += `本次未發現明顯問題或修正建議。\n\n`;
         }
 
         if (passedFiles.length > 0) {
